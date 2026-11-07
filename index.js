@@ -25,46 +25,40 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBit
 // --- CONFIGURE YOUR ROLE IDS HERE ---
 // =========================================================================
 
-// 1. ALL MODERATOR ROLES: Put EVERY staff role ID here. Only people with these 
-//    roles (or Admin permission) can run the commands at all.
 const ALLOWED_MOD_ROLES = [
-    '1568705082235682888', // Replace with Junior Mod Role ID
-    '1568707527674302494', // Replace with Senior Mod Role ID
+    '1568705082235682888', // Junior Mod Role ID
+    '1568707527674302494', // Senior Mod Role ID
     '1568723688432607392',
     '1568726228360499220',
-    '1568727225681838211',// Replace with Admin Role ID
+    '1568727225681838211', // Admin Role ID
 ];
 
-// 2. ROLES REQUIRING A REASON: Put role IDs here whose holders MUST provide 
-//    a reason when taking action. (e.g., Junior Mods)
+// Roles requiring a reason for general actions (like /timeout)
 const ROLES_REQUIRING_REASON = [
     '1568726228360499220',
-    '1568727225681838211',// Replace with Admin Role ID
+    '1568727225681838211',
 ];
 
-// 3. ROLES WHERE REASON IS OPTIONAL: Put role IDs here whose holders can leave 
-//    the reason blank. (e.g., Senior Mods / Admins)
 const ROLES_OPTIONAL_REASON = [
-    '1568705082235682888', // Replace with Junior Mod Role ID
-    '1568707527674302494', // Replace with Senior Mod Role ID
+    '1568705082235682888',
+    '1568707527674302494',
     '1568723688432607392',
 ];
 // =========================================================================
 
+// Stores strikes: Map<userId, strikeCount>
 const userStrikes = new Map();
 
 function getModPermissionCategory(member) {
     const memberRoles = member.roles.cache;
 
-    // Check if member has Administrator permission or is in the allowed mod list
     const isAuthorized = member.permissions.has(PermissionFlagsBits.Administrator) || 
                           ALLOWED_MOD_ROLES.some(roleId => memberRoles.has(roleId));
 
     if (!isAuthorized) {
-        return null; // Not allowed to use commands at all
+        return null; 
     }
 
-    // Check if reason is required for them
     if (ROLES_REQUIRING_REASON.some(roleId => memberRoles.has(roleId)) && 
         !ROLES_OPTIONAL_REASON.some(roleId => memberRoles.has(roleId)) &&
         !member.permissions.has(PermissionFlagsBits.Administrator)) {
@@ -84,7 +78,6 @@ client.on('interactionCreate', async interaction => {
     const { commandName, options, member, guild } = interaction;
     const permCategory = getModPermissionCategory(member);
 
-    // Block anyone without an allowed role
     if (!permCategory) {
         return interaction.reply({ 
             content: '❌ You do not have the required role to use moderation commands.', 
@@ -100,10 +93,30 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({ content: 'User not found in this server.', ephemeral: true });
     }
 
-    // Enforce reason requirement for roles that need it
-    if (permCategory === 'REQUIRED' && (!reasonInput || reasonInput.trim() === '')) {
+    const isHighestAdminOrOwner = guild.ownerId === member.id || member.permissions.has(PermissionFlagsBits.Administrator);
+
+    // --- HIERARCHY CHECK FOR TARGETING USERS ---
+    if (!isHighestAdminOrOwner && targetMember.roles.highest.position >= member.roles.highest.position) {
+        return interaction.reply({
+            content: '❌ You cannot perform moderation actions on a user with an equal or higher role than yours.',
+            ephemeral: true
+        });
+    }
+
+    // --- RULE: REASON IS MANDATORY FOR STRIKES NO MATTER THE ROLE ---
+    if (commandName === 'strike') {
+        if (!reasonInput || reasonInput.trim() === '') {
+            return interaction.reply({ 
+                content: '❌ **Reason Required:** You must provide a reason when issuing a strike.', 
+                ephemeral: true 
+            });
+        }
+    }
+
+    // Reason validation for regular timeouts based on role tiers
+    if (commandName === 'timeout' && permCategory === 'REQUIRED' && (!reasonInput || reasonInput.trim() === '')) {
         return interaction.reply({ 
-            content: '❌ **Reason Required:** Your staff role requires you to specify a reason for moderation actions.', 
+            content: '❌ **Reason Required:** Your staff role requires you to specify a reason for timeouts.', 
             ephemeral: true 
         });
     }
@@ -145,6 +158,38 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({ content: escalationText, embeds: [embed] });
     }
 
+    if (commandName === 'removestrike') {
+        const currentStrikes = userStrikes.get(targetUser.id) || 0;
+
+        if (currentStrikes <= 0) {
+            return interaction.reply({ content: `❌ **${targetUser.tag}** has 0 strikes to remove.`, ephemeral: true });
+        }
+
+        // --- RULE: ONLY SOMEONE WITH A HIGHER ROLE CAN REMOVE IT ---
+        // Check if the strike issuer/target had a higher role, meaning this staff member is strictly higher than them.
+        if (!isHighestAdminOrOwner && targetMember.roles.highest.position >= member.roles.highest.position) {
+            return interaction.reply({
+                content: '❌ You must have a higher role than the user to remove their strike.',
+                ephemeral: true
+            });
+        }
+
+        const newStrikes = currentStrikes - 1;
+        userStrikes.set(targetUser.id, newStrikes);
+
+        const embed = new EmbedBuilder()
+            .setTitle('Strike Removed')
+            .setColor(0x00FF00)
+            .addFields(
+                { name: 'Target User', value: `${targetUser.tag} (\`${targetUser.id}\`)`, inline: true },
+                { name: 'Moderator', value: `${member.user.tag}`, inline: true },
+                { name: 'Remaining Strikes', value: `${newStrikes}`, inline: true }
+            )
+            .setTimestamp();
+
+        return interaction.reply({ embeds: [embed] });
+    }
+
     if (commandName === 'timeout') {
         const durationMinutes = options.getInteger('duration');
 
@@ -167,6 +212,25 @@ client.on('interactionCreate', async interaction => {
                 { name: 'Duration', value: `${durationMinutes} min`, inline: true },
                 { name: 'Moderator', value: `${member.user.tag}`, inline: true },
                 { name: 'Reason', value: finalReason }
+            )
+            .setTimestamp();
+
+        return interaction.reply({ embeds: [embed] });
+    }
+
+    if (commandName === 'untime') {
+        await targetMember.timeout(null, `Timeout removed by ${member.user.tag}`);
+
+        await targetUser.send({
+            content: `Your timeout has been removed in **${guild.name}** by staff.`
+        }).catch(() => null);
+
+        const embed = new EmbedBuilder()
+            .setTitle('Timeout Removed')
+            .setColor(0x00CC00)
+            .addFields(
+                { name: 'Target User', value: `${targetUser.tag} (\`${targetUser.id}\`)`, inline: true },
+                { name: 'Moderator', value: `${member.user.tag}`, inline: true }
             )
             .setTimestamp();
 
