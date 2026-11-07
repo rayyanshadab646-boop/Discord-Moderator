@@ -2,49 +2,76 @@ const { Client, GatewayIntentBits, PermissionFlagsBits, EmbedBuilder } = require
 const express = require('express');
 require('dotenv').config();
 
-// --- KEEP-ALIVE WEB SERVER FOR RENDER ---
+// --- UPTIME ROBOT / RENDER KEEP-ALIVE WEB SERVER ---
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-    res.send('Bot is online and running!');
+    res.status(200).send('Bot is online and running!');
+});
+
+app.get('/ping', (req, res) => {
+    res.status(200).send('PONG');
 });
 
 app.listen(PORT, () => {
     console.log(`Keep-alive server listening on port ${PORT}`);
 });
-// ----------------------------------------
+// --------------------------------------------------
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
-// --- CONFIGURE YOUR ROLE IDS DIRECTLY HERE ---
-const ROLES_REQUIRING_REASON = [
-    '111111111111111111', // Replace with Junior Mod Role ID 1
-    '222222222222222222'  // Replace with Junior Mod Role ID 2
+// =========================================================================
+// --- CONFIGURE YOUR ROLE IDS HERE ---
+// =========================================================================
+
+// 1. ALL MODERATOR ROLES: Put EVERY staff role ID here. Only people with these 
+//    roles (or Admin permission) can run the commands at all.
+const ALLOWED_MOD_ROLES = [
+    '1568705082235682888', // Replace with Junior Mod Role ID
+    '1568707527674302494', // Replace with Senior Mod Role ID
+    '1568723688432607392',
+    '1568726228360499220',
+    '1568727225681838211',// Replace with Admin Role ID
 ];
 
-const ROLES_OPTIONAL_REASON = [
-    '333333333333333333', // Replace with Senior Mod Role ID 1
-    '444444444444444444', // Replace with Admin Role ID 2
-    '555555555555555555'  // Add as many as you want here
+// 2. ROLES REQUIRING A REASON: Put role IDs here whose holders MUST provide 
+//    a reason when taking action. (e.g., Junior Mods)
+const ROLES_REQUIRING_REASON = [
+    '1568726228360499220',
+    '1568727225681838211',// Replace with Admin Role ID
 ];
-// ---------------------------------------------
+
+// 3. ROLES WHERE REASON IS OPTIONAL: Put role IDs here whose holders can leave 
+//    the reason blank. (e.g., Senior Mods / Admins)
+const ROLES_OPTIONAL_REASON = [
+    '1568705082235682888', // Replace with Junior Mod Role ID
+    '1568707527674302494', // Replace with Senior Mod Role ID
+    '1568723688432607392',
+];
+// =========================================================================
 
 const userStrikes = new Map();
 
 function getModPermissionCategory(member) {
     const memberRoles = member.roles.cache;
 
-    if (member.permissions.has(PermissionFlagsBits.Administrator) || 
-        ROLES_OPTIONAL_REASON.some(roleId => memberRoles.has(roleId))) {
-        return 'OPTIONAL';
+    // Check if member has Administrator permission or is in the allowed mod list
+    const isAuthorized = member.permissions.has(PermissionFlagsBits.Administrator) || 
+                          ALLOWED_MOD_ROLES.some(roleId => memberRoles.has(roleId));
+
+    if (!isAuthorized) {
+        return null; // Not allowed to use commands at all
     }
 
-    if (ROLES_REQUIRING_REASON.some(roleId => memberRoles.has(roleId))) {
+    // Check if reason is required for them
+    if (ROLES_REQUIRING_REASON.some(roleId => memberRoles.has(roleId)) && 
+        !ROLES_OPTIONAL_REASON.some(roleId => memberRoles.has(roleId)) &&
+        !member.permissions.has(PermissionFlagsBits.Administrator)) {
         return 'REQUIRED';
     }
 
-    return null;
+    return 'OPTIONAL';
 }
 
 client.once('ready', () => {
@@ -57,9 +84,10 @@ client.on('interactionCreate', async interaction => {
     const { commandName, options, member, guild } = interaction;
     const permCategory = getModPermissionCategory(member);
 
+    // Block anyone without an allowed role
     if (!permCategory) {
         return interaction.reply({ 
-            content: 'You do not have permission to execute moderation commands.', 
+            content: '❌ You do not have the required role to use moderation commands.', 
             ephemeral: true 
         });
     }
@@ -72,6 +100,7 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({ content: 'User not found in this server.', ephemeral: true });
     }
 
+    // Enforce reason requirement for roles that need it
     if (permCategory === 'REQUIRED' && (!reasonInput || reasonInput.trim() === '')) {
         return interaction.reply({ 
             content: '❌ **Reason Required:** Your staff role requires you to specify a reason for moderation actions.', 
