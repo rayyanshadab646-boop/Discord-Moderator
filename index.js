@@ -22,8 +22,10 @@ app.listen(PORT, () => {
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
 // =========================================================================
-// --- CONFIGURE YOUR ROLE IDS HERE ---
+// --- CONFIGURE YOUR ROLES & AUDIT CHANNEL ID HERE ---
 // =========================================================================
+
+const AUDIT_LOG_CHANNEL_ID = 'YOUR_MOD_LOGS_CHANNEL_ID_HERE'; // <-- Paste your channel ID here!
 
 const ALLOWED_MOD_ROLES = [
     '1568705082235682888', // Junior Mod Role ID
@@ -31,7 +33,7 @@ const ALLOWED_MOD_ROLES = [
     '1568723688432607392',
     '1568726228360499220',
     '1568727225681838211',
-    '1568886123999006751',// Admin Role ID
+    '1568886123999006751', // Admin Role ID
 ];
 
 const ROLES_REQUIRING_REASON = [
@@ -48,15 +50,23 @@ const ROLES_OPTIONAL_REASON = [
 // =========================================================================
 
 // Enhanced storage tracking issuer details, reasons, and exact timestamps
-// userStrikes: Map<userId, Array<{ issuerId: string, issuerTag: string, issuerRolePosition: number, reason: string, timestamp: number }>>
 const userStrikes = new Map();
-
-// activeTimeouts: Map<userId, { issuerId: string, issuerTag: string, issuerRolePosition: number, reason: string, timestamp: number, durationMinutes: number }>
 const activeTimeouts = new Map();
+
+async function sendAuditLog(guild, embed) {
+    if (!AUDIT_LOG_CHANNEL_ID || AUDIT_LOG_CHANNEL_ID === 'YOUR_MOD_LOGS_CHANNEL_ID_HERE') return;
+    try {
+        const channel = await guild.channels.fetch(AUDIT_LOG_CHANNEL_ID).catch(() => null);
+        if (channel && channel.isTextBased()) {
+            await channel.send({ embeds: [embed] });
+        }
+    } catch (err) {
+        console.error('Failed to send audit log:', err);
+    }
+}
 
 function getModPermissionCategory(member) {
     const memberRoles = member.roles.cache;
-
     const isAuthorized = member.permissions.has(PermissionFlagsBits.Administrator) || 
                           ALLOWED_MOD_ROLES.some(roleId => memberRoles.has(roleId));
 
@@ -92,7 +102,6 @@ client.on('interactionCreate', async interaction => {
     const targetMember = targetUser ? await guild.members.fetch(targetUser.id).catch(() => null) : null;
     const reasonInput = options.getString('reason');
 
-    // Commands that require a target user check
     const requiresTarget = ['strike', 'removestrike', 'timeout', 'untime', 'warnings', 'strikeinfo', 'timeoutinfo'];
     if (requiresTarget.includes(commandName) && !targetMember) {
         return interaction.reply({ content: '❌ User not found in this server.', ephemeral: true });
@@ -100,7 +109,6 @@ client.on('interactionCreate', async interaction => {
 
     const isHighestAdminOrOwner = guild.ownerId === member.id || member.permissions.has(PermissionFlagsBits.Administrator);
 
-    // --- BASE HIERARCHY CHECK (Action Executor vs Target) ---
     if (requiresTarget.includes(commandName) && commandName !== 'warnings' && commandName !== 'strikeinfo' && commandName !== 'timeoutinfo') {
         if (!isHighestAdminOrOwner && targetMember.roles.highest.position >= member.roles.highest.position) {
             return interaction.reply({
@@ -188,7 +196,8 @@ client.on('interactionCreate', async interaction => {
             )
             .setTimestamp();
 
-        return interaction.reply({ content: escalationText, embeds: [embed] });
+        await sendAuditLog(guild, embed);
+        return interaction.reply({ content: `✅ Strike successfully issued.${escalationText}`, ephemeral: true });
     }
 
     // =========================================================================
@@ -203,7 +212,6 @@ client.on('interactionCreate', async interaction => {
 
         const lastStrike = strikes[strikes.length - 1];
 
-        // Strict Hierarchy Check for removal: Executor must be higher than the issuer, unless they are the same person or Admin/Owner
         if (!isHighestAdminOrOwner && member.id !== lastStrike.issuerId) {
             if (member.roles.highest.position <= lastStrike.issuerRolePosition) {
                 return interaction.reply({
@@ -228,7 +236,8 @@ client.on('interactionCreate', async interaction => {
             )
             .setTimestamp();
 
-        return interaction.reply({ embeds: [embed] });
+        await sendAuditLog(guild, embed);
+        return interaction.reply({ content: `✅ Strike successfully removed.`, ephemeral: true });
     }
 
     // =========================================================================
@@ -276,7 +285,8 @@ client.on('interactionCreate', async interaction => {
             )
             .setTimestamp();
 
-        return interaction.reply({ embeds: [embed] });
+        await sendAuditLog(guild, embed);
+        return interaction.reply({ content: `✅ User successfully timed out.`, ephemeral: true });
     }
 
     // =========================================================================
@@ -316,7 +326,8 @@ client.on('interactionCreate', async interaction => {
             )
             .setTimestamp();
 
-        return interaction.reply({ embeds: [embed] });
+        await sendAuditLog(guild, embed);
+        return interaction.reply({ content: `✅ Timeout successfully removed.`, ephemeral: true });
     }
 
     // =========================================================================
